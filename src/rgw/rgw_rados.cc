@@ -4732,7 +4732,7 @@ static bool has_olh_tag(map<string, bufferlist>& attrs)
 }
 
 int RGWRados::get_olh_target_state(RGWObjectCtx& obj_ctx, rgw_obj& obj, RGWObjState *olh_state,
-                                   RGWObjState **target_state, RGWObjVersionTracker *objv_tracker)
+                                   RGWObjState **target_state)
 {
   assert(olh_state->is_olh);
 
@@ -4741,7 +4741,7 @@ int RGWRados::get_olh_target_state(RGWObjectCtx& obj_ctx, rgw_obj& obj, RGWObjSt
   if (r < 0) {
     return r;
   }
-  r = get_obj_state(&obj_ctx, target, target_state, objv_tracker, false);
+  r = get_obj_state(&obj_ctx, target, target_state, false);
   if (r < 0) {
     return r;
   }
@@ -4749,7 +4749,52 @@ int RGWRados::get_olh_target_state(RGWObjectCtx& obj_ctx, rgw_obj& obj, RGWObjSt
   return 0;
 }
 
-int RGWRados::get_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, RGWObjVersionTracker *objv_tracker, bool follow_olh)
+int RGWRados::get_system_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, RGWObjVersionTracker *objv_tracker)
+{
+  RGWObjState *s = rctx->get_state(obj);
+  ldout(cct, 20) << "get_system_obj_state: rctx=" << (void *)rctx << " obj=" << obj << " state=" << (void *)s << " s->prefetch_data=" << s->prefetch_data << dendl;
+  *state = s;
+  if (s->has_attrs) {
+    return 0;
+  }
+
+  s->obj = obj;
+
+  int r = raw_obj_stat(obj, &s->size, &s->mtime, &s->epoch, &s->attrset, (s->prefetch_data ? &s->data : NULL), objv_tracker);
+  if (r == -ENOENT) {
+    s->exists = false;
+    s->has_attrs = true;
+    s->mtime = 0;
+    return 0;
+  }
+  if (r < 0)
+    return r;
+
+  s->exists = true;
+  s->has_attrs = true;
+  s->obj_tag = s->attrset[RGW_ATTR_ID_TAG];
+
+  bufferlist manifest_bl = s->attrset[RGW_ATTR_MANIFEST];
+  if (s->obj_tag.length())
+    ldout(cct, 20) << "get_system_obj_state: setting s->obj_tag to " << string(s->obj_tag.c_str(), s->obj_tag.length()) << dendl;
+  else
+    ldout(cct, 20) << "get_system_obj_state: s->obj_tag was set empty" << dendl;
+
+  return 0;
+}
+
+int RGWRados::get_system_obj_state(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, RGWObjVersionTracker *objv_tracker)
+{
+  int ret;
+
+  do {
+    ret = get_system_obj_state_impl(rctx, obj, state, objv_tracker);
+  } while (ret == -EAGAIN);
+
+  return ret;
+}
+
+int RGWRados::get_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, bool follow_olh)
 {
   bool need_follow_olh = follow_olh && !obj.have_instance();
 
@@ -4758,14 +4803,14 @@ int RGWRados::get_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState *
   *state = s;
   if (s->has_attrs) {
     if (s->is_olh && need_follow_olh) {
-      return get_olh_target_state(*rctx, obj, s, state, objv_tracker);
+      return get_olh_target_state(*rctx, obj, s, state);
     }
     return 0;
   }
 
   s->obj = obj;
 
-  int r = raw_obj_stat(obj, &s->size, &s->mtime, &s->epoch, &s->attrset, (s->prefetch_data ? &s->data : NULL), objv_tracker);
+  int r = RGWRados::raw_obj_stat(obj, &s->size, &s->mtime, &s->epoch, &s->attrset, (s->prefetch_data ? &s->data : NULL), NULL);
   if (r == -ENOENT) {
     s->exists = false;
     s->has_attrs = true;
@@ -4834,19 +4879,19 @@ int RGWRados::get_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState *
     ldout(cct, 20) << __func__ << ": setting s->olh_tag to " << string(s->olh_tag.c_str(), s->olh_tag.length()) << dendl;
 
     if (need_follow_olh) {
-      return get_olh_target_state(*rctx, obj, s, state, objv_tracker);
+      return get_olh_target_state(*rctx, obj, s, state);
     }
   }
 
   return 0;
 }
 
-int RGWRados::get_obj_state(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, RGWObjVersionTracker *objv_tracker, bool follow_olh)
+int RGWRados::get_obj_state(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, bool follow_olh)
 {
   int ret;
 
   do {
-    ret = get_obj_state_impl(rctx, obj, state, objv_tracker, follow_olh);
+    ret = get_obj_state_impl(rctx, obj, state, follow_olh);
   } while (ret == -EAGAIN);
 
   return ret;
@@ -4922,7 +4967,7 @@ int RGWRados::append_atomic_test(RGWObjectCtx *rctx, rgw_obj& obj,
 
 int RGWRados::Object::get_state(RGWObjState **pstate, bool follow_olh)
 {
-  return store->get_obj_state(&ctx, obj, pstate, NULL, follow_olh);
+  return store->get_obj_state(&ctx, obj, pstate, follow_olh);
 }
 
 void RGWRados::Object::invalidate_state()
@@ -5325,7 +5370,7 @@ int RGWRados::Object::Read::prepare(int64_t *pofs, int64_t *pend)
 
 int RGWRados::SystemObject::get_state(RGWObjState **pstate, RGWObjVersionTracker *objv_tracker)
 {
-  return store->get_obj_state(&ctx, obj, pstate, objv_tracker, false);
+  return store->get_system_obj_state(&ctx, obj, pstate, objv_tracker);
 }
 
 int RGWRados::stat_system_obj(RGWObjectCtx& obj_ctx,
@@ -5338,7 +5383,7 @@ int RGWRados::stat_system_obj(RGWObjectCtx& obj_ctx,
 {
   RGWObjState *astate = NULL;
 
-  int r = get_obj_state(&obj_ctx, obj, &astate, objv_tracker);
+  int r = get_system_obj_state(&obj_ctx, obj, &astate, objv_tracker);
   if (r < 0)
     return r;
 
@@ -5591,7 +5636,7 @@ int RGWRados::get_system_obj(RGWObjectCtx& obj_ctx, RGWRados::SystemObject::Read
 
   get_obj_bucket_and_oid_loc(obj, bucket, oid, key);
 
-  int r = get_obj_state(&obj_ctx, obj, &astate, NULL);
+  int r = get_system_obj_state(&obj_ctx, obj, &astate, NULL);
   if (r < 0)
     return r;
 
@@ -6564,7 +6609,7 @@ int RGWRados::set_olh(RGWObjectCtx& obj_ctx, RGWBucketInfo& bucket_info, rgw_obj
       obj_ctx.invalidate(olh_obj);
     }
 
-    ret = get_obj_state(&obj_ctx, olh_obj, &state, NULL, false); /* don't follow olh */
+    ret = get_obj_state(&obj_ctx, olh_obj, &state, false); /* don't follow olh */
     if (ret < 0) {
       return ret;
     }
@@ -6623,7 +6668,7 @@ int RGWRados::unlink_obj_instance(RGWObjectCtx& obj_ctx, RGWBucketInfo& bucket_i
       obj_ctx.invalidate(olh_obj);
     }
 
-    ret = get_obj_state(&obj_ctx, olh_obj, &state, NULL, false); /* don't follow olh */
+    ret = get_obj_state(&obj_ctx, olh_obj, &state, false); /* don't follow olh */
     if (ret < 0)
       return ret;
 

@@ -1226,8 +1226,9 @@ class RGWRados
   uint64_t max_bucket_id;
 
   int get_olh_target_state(RGWObjectCtx& rctx, rgw_obj& obj, RGWObjState *olh_state,
-                           RGWObjState **target_state, RGWObjVersionTracker *objv_tracker);
-  int get_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, RGWObjVersionTracker *objv_tracker, bool follow_olh);
+                           RGWObjState **target_state);
+  int get_system_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, RGWObjVersionTracker *objv_tracker);
+  int get_obj_state_impl(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, bool follow_olh);
   int append_atomic_test(RGWObjectCtx *rctx, rgw_obj& obj,
                          librados::ObjectOperation& op, RGWObjState **state);
 
@@ -1860,9 +1861,10 @@ public:
                         map<string, bufferlist>& attrs,
                         map<string, bufferlist>* rmattrs);
 
-  int get_obj_state(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, RGWObjVersionTracker *objv_tracker, bool follow_olh);
-  int get_obj_state(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, RGWObjVersionTracker *objv_tracker) {
-    return get_obj_state(rctx, obj, state, objv_tracker, true);
+  int get_system_obj_state(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, RGWObjVersionTracker *objv_tracker);
+  int get_obj_state(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state, bool follow_olh);
+  int get_obj_state(RGWObjectCtx *rctx, rgw_obj& obj, RGWObjState **state) {
+    return get_obj_state(rctx, obj, state, true);
   }
 
   virtual int stat_system_obj(RGWObjectCtx& obj_ctx,
